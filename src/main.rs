@@ -31,8 +31,24 @@ struct AppState {
 fn main() {
     let state = AppState {
         agents: Arc::new(Mutex::new(vec![
-            Agent { id: 1, name: "Pressing Phoenix".into(), style: "High press".into(), prompt: "Win the ball back within five seconds and attack the space.".into(), rating: 84, wins: 3, goals: 9 },
-            Agent { id: 2, name: "Calm Current".into(), style: "Possession".into(), prompt: "Keep the ball moving and create the safest progressive pass.".into(), rating: 79, wins: 2, goals: 7 },
+            Agent {
+                id: 1,
+                name: "Pressing Phoenix".into(),
+                style: "High press".into(),
+                prompt: "Win the ball back within five seconds and attack the space.".into(),
+                rating: 84,
+                wins: 3,
+                goals: 9,
+            },
+            Agent {
+                id: 2,
+                name: "Calm Current".into(),
+                style: "Possession".into(),
+                prompt: "Keep the ball moving and create the safest progressive pass.".into(),
+                rating: 79,
+                wins: 2,
+                goals: 7,
+            },
         ])),
         tournament: Arc::new(Mutex::new(Tournament {
             name: "Valkyrie Cup · Week 01".into(),
@@ -44,20 +60,22 @@ fn main() {
 
     let listener = TcpListener::bind("0.0.0.0:8080").expect("bind port 8080");
     println!("Valkyrie Cup listening on http://localhost:8080");
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let state = state.clone();
-            thread::spawn(move || handle_connection(stream, state));
-        }
+    for stream in listener.incoming().flatten() {
+        let state = state.clone();
+        thread::spawn(move || handle_connection(stream, state));
     }
 }
 
 fn handle_connection(mut stream: TcpStream, state: AppState) {
     let mut buffer = [0; 16_384];
-    let Ok(size) = stream.read(&mut buffer) else { return };
+    let Ok(size) = stream.read(&mut buffer) else {
+        return;
+    };
     let request = String::from_utf8_lossy(&buffer[..size]);
     let mut lines = request.lines();
-    let Some(request_line) = lines.next() else { return };
+    let Some(request_line) = lines.next() else {
+        return;
+    };
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
         return;
@@ -73,14 +91,28 @@ fn handle_connection(mut stream: TcpStream, state: AppState) {
     let _ = stream.write_all(format!("{headers}{response}").as_bytes());
 }
 
-fn route(method: &str, path: &str, body: &str, state: &AppState) -> (&'static str, &'static str, String) {
+fn route(
+    method: &str,
+    path: &str,
+    body: &str,
+    state: &AppState,
+) -> (&'static str, &'static str, String) {
     match (method, path) {
-        ("GET", "/") => ("200 OK", "text/html; charset=utf-8", include_str!("../public/index.html").into()),
+        ("GET", "/") => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            include_str!("../public/index.html").into(),
+        ),
         ("GET", "/api/state") => ("200 OK", "application/json", state_json(state)),
         ("POST", "/api/agents") => create_agent(body, state),
         ("POST", "/api/train") => train_agent(body, state),
         ("POST", "/api/tournament/join") => join_tournament(body, state),
-        _ => ("404 Not Found", "application/json", "{\"error\":\"not found\"}".into()),
+        ("POST", "/api/tournament/round") => play_round(state),
+        _ => (
+            "404 Not Found",
+            "application/json",
+            "{\"error\":\"not found\"}".into(),
+        ),
     }
 }
 
@@ -90,33 +122,95 @@ fn create_agent(body: &str, state: &AppState) -> (&'static str, &'static str, St
     let prompt = value(body, "prompt").unwrap_or_else(|| "Play intelligently.".into());
     let mut agents = state.agents.lock().unwrap();
     let id = agents.iter().map(|agent| agent.id).max().unwrap_or(0) + 1;
-    agents.push(Agent { id, name, style, prompt, rating: 60, wins: 0, goals: 0 });
-    ("201 Created", "application/json", "{\"message\":\"agent created\"}".into())
+    agents.push(Agent {
+        id,
+        name,
+        style,
+        prompt,
+        rating: 60,
+        wins: 0,
+        goals: 0,
+    });
+    (
+        "201 Created",
+        "application/json",
+        "{\"message\":\"agent created\"}".into(),
+    )
 }
 
 fn train_agent(body: &str, state: &AppState) -> (&'static str, &'static str, String) {
-    let id = value(body, "id").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+    let id = value(body, "id")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
     let prompt = value(body, "prompt").unwrap_or_else(|| "Make better decisions.".into());
     let mut agents = state.agents.lock().unwrap();
     let Some(agent) = agents.iter_mut().find(|agent| agent.id == id) else {
-        return ("404 Not Found", "application/json", "{\"error\":\"agent not found\"}".into());
+        return (
+            "404 Not Found",
+            "application/json",
+            "{\"error\":\"agent not found\"}".into(),
+        );
     };
     agent.prompt = prompt;
     agent.rating = (agent.rating + 4).min(99);
-    ("200 OK", "application/json", format!("{{\"rating\":{}}}", agent.rating))
+    (
+        "200 OK",
+        "application/json",
+        format!("{{\"rating\":{}}}", agent.rating),
+    )
 }
 
 fn join_tournament(body: &str, state: &AppState) -> (&'static str, &'static str, String) {
-    let id = value(body, "id").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+    let id = value(body, "id")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
     let agents = state.agents.lock().unwrap();
     if !agents.iter().any(|agent| agent.id == id) {
-        return ("404 Not Found", "application/json", "{\"error\":\"agent not found\"}".into());
+        return (
+            "404 Not Found",
+            "application/json",
+            "{\"error\":\"agent not found\"}".into(),
+        );
     }
     let mut tournament = state.tournament.lock().unwrap();
     if !tournament.agents.contains(&id) {
         tournament.agents.push(id);
     }
-    ("200 OK", "application/json", "{\"message\":\"agent joined\"}".into())
+    (
+        "200 OK",
+        "application/json",
+        "{\"message\":\"agent joined\"}".into(),
+    )
+}
+
+fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
+    let tournament = state.tournament.lock().unwrap().clone();
+    let mut agents = state.agents.lock().unwrap();
+    let Some(winner_id) = tournament
+        .agents
+        .iter()
+        .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
+        .max_by_key(|agent| agent.rating)
+        .map(|agent| agent.id)
+    else {
+        return (
+            "409 Conflict",
+            "application/json",
+            "{\"error\":\"no entrants\"}".into(),
+        );
+    };
+    let winner = agents
+        .iter_mut()
+        .find(|agent| agent.id == winner_id)
+        .unwrap();
+    winner.wins += 1;
+    winner.goals += 2;
+    winner.rating = (winner.rating + 1).min(99);
+    (
+        "200 OK",
+        "application/json",
+        format!("{{\"winner\":\"{}\",\"goals\":2}}", escape(&winner.name)),
+    )
 }
 
 fn state_json(state: &AppState) -> String {
@@ -140,7 +234,10 @@ fn value(body: &str, key: &str) -> Option<String> {
 }
 
 fn escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
 }
 
 #[cfg(test)]
@@ -155,10 +252,59 @@ mod tests {
     #[test]
     fn training_increases_rating() {
         let state = AppState {
-            agents: Arc::new(Mutex::new(vec![Agent { id: 1, name: "A".into(), style: "B".into(), prompt: "C".into(), rating: 60, wins: 0, goals: 0 }])),
-            tournament: Arc::new(Mutex::new(Tournament { name: "T".into(), status: "LIVE".into(), prize: "P".into(), agents: vec![] })),
+            agents: Arc::new(Mutex::new(vec![Agent {
+                id: 1,
+                name: "A".into(),
+                style: "B".into(),
+                prompt: "C".into(),
+                rating: 60,
+                wins: 0,
+                goals: 0,
+            }])),
+            tournament: Arc::new(Mutex::new(Tournament {
+                name: "T".into(),
+                status: "LIVE".into(),
+                prize: "P".into(),
+                agents: vec![],
+            })),
         };
         train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
         assert_eq!(state.agents.lock().unwrap()[0].rating, 64);
+    }
+
+    #[test]
+    fn round_rewards_highest_rated_entrant() {
+        let state = AppState {
+            agents: Arc::new(Mutex::new(vec![
+                Agent {
+                    id: 1,
+                    name: "A".into(),
+                    style: "B".into(),
+                    prompt: "C".into(),
+                    rating: 60,
+                    wins: 0,
+                    goals: 0,
+                },
+                Agent {
+                    id: 2,
+                    name: "Winner".into(),
+                    style: "B".into(),
+                    prompt: "C".into(),
+                    rating: 80,
+                    wins: 0,
+                    goals: 0,
+                },
+            ])),
+            tournament: Arc::new(Mutex::new(Tournament {
+                name: "T".into(),
+                status: "LIVE".into(),
+                prize: "P".into(),
+                agents: vec![1, 2],
+            })),
+        };
+        play_round(&state);
+        let agents = state.agents.lock().unwrap();
+        assert_eq!(agents[1].wins, 1);
+        assert_eq!(agents[1].goals, 2);
     }
 }

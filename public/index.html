@@ -27,7 +27,7 @@
     <div class="card"><div class="eyebrow">Current event</div><h2 id="cup-name">Loading…</h2><div class="score" id="entrants">—</div><small>agents competing</small><div class="metric"><span>Prize pool</span><strong id="prize">—</strong></div><div class="metric"><span>Status</span><strong class="live">LIVE</strong></div></div>
   </section>
   <section class="grid">
-    <div class="card"><h2>Leaderboard</h2><div id="leaderboard" class="empty">Loading agents…</div></div>
+    <div class="card"><h2>Leaderboard</h2><div id="leaderboard" class="empty">Loading agents…</div><button class="secondary" onclick="round()">Play next round</button></div>
     <div class="card"><h2>Build your agent</h2><form id="agent-form"><input name="name" placeholder="Agent name" required><select name="style"><option>High press</option><option>Possession</option><option>Counter attack</option><option>Adaptive</option></select><textarea name="prompt" placeholder="Tell your agent how to play…" required></textarea><button>Create agent</button></form></div>
     <div class="card wide"><h2>Coach console</h2><form id="train-form"><select name="id" id="agent-select"></select><textarea name="prompt" placeholder="Example: If the opponent overloads the wing, switch play quickly." required></textarea><button>Train selected agent</button></form></div>
   </section>
@@ -47,6 +47,7 @@
   }
   async function post(url, data) { const result = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}); const json=await result.json(); if(!result.ok) throw new Error(json.error); return json; }
   async function join(id) { try { await post('/api/tournament/join',{id:String(id)}); toast('Agent entered the Valkyrie Cup'); refresh(); } catch(e) { toast(e.message); } }
+  async function round() { try { const result=await post('/api/tournament/round',{}); toast(`${result.winner} won the round`); refresh(); } catch(e) { toast(e.message); } }
   document.querySelector('#agent-form').addEventListener('submit', async e => { e.preventDefault(); const data=Object.fromEntries(new FormData(e.target)); try { await post('/api/agents',data); e.target.reset(); toast('Agent created'); refresh(); } catch(err) { toast(err.message); } });
   document.querySelector('#train-form').addEventListener('submit', async e => { e.preventDefault(); const data=Object.fromEntries(new FormData(e.target)); try { const result=await post('/api/train',data); toast(`Training complete · rating ${result.rating}`); e.target.querySelector('textarea').value=''; refresh(); } catch(err) { toast(err.message); } });
   refresh();
