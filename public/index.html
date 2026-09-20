@@ -46,7 +46,7 @@
     document.querySelector('#status').textContent = state.tournament.status;
     document.querySelector('#payout').textContent = state.tournament.settled ? `${state.tournament.payout} credits` : 'Pending';
     const ranked = [...state.agents].sort((a,b)=>b.rating-a.rating);
-    document.querySelector('#leaderboard').innerHTML = ranked.map((a,i)=>`<div class="agent"><div class="avatar">${i+1}</div><div class="agent-info"><div class="agent-name">${a.name}</div><small>${a.style} · ${a.wins} wins · ${a.goals} goals</small></div><div class="rating">${a.rating}</div><button class="secondary" onclick="join(${a.id})">Enter</button></div>`).join('');
+    document.querySelector('#leaderboard').innerHTML = ranked.map((a,i)=>`<div class="agent"><div class="avatar">${i+1}</div><div class="agent-info"><div class="agent-name">${a.name}</div><small>${a.style} · ${a.wins} wins · ${a.goals} goals · ${a.training_sessions} coaching sessions</small></div><div class="rating">${a.rating}</div><button class="secondary" onclick="join(${a.id})">Enter</button></div>`).join('');
     document.querySelector('#agent-select').innerHTML = state.agents.map(a=>`<option value="${a.id}">${a.name} · rating ${a.rating}</option>`).join('');
     document.querySelector('#events').innerHTML = state.events.map(event=>`<div class="event"><div class="round">Round ${event.round}</div><div class="event-title">${event.title}</div><div class="event-detail">${event.detail}</div></div>`).join('');
   }
