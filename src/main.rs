@@ -21,6 +21,8 @@ struct Tournament {
     status: String,
     prize: String,
     agents: Vec<usize>,
+    winner_id: Option<usize>,
+    payout: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +84,8 @@ fn default_state() -> (Vec<Agent>, Tournament, Vec<MatchEvent>) {
             status: "LIVE".into(),
             prize: "2,500 credits".into(),
             agents: vec![1, 2],
+            winner_id: None,
+            payout: 0,
         },
         vec![
             MatchEvent {
@@ -115,7 +119,7 @@ fn load_state(path: &str) -> (Vec<Agent>, Tournament, Vec<MatchEvent>) {
                 wins: parts[6].parse().unwrap_or(0),
                 goals: parts[7].parse().unwrap_or(0),
             }),
-            Some("tournament") if parts.len() == 5 => {
+            Some("tournament") if parts.len() == 5 || parts.len() == 7 => {
                 tournament = Some(Tournament {
                     name: parts[1].replace("\\p", "|"),
                     status: parts[2].replace("\\p", "|"),
@@ -124,6 +128,11 @@ fn load_state(path: &str) -> (Vec<Agent>, Tournament, Vec<MatchEvent>) {
                         .split(',')
                         .filter_map(|id| id.parse().ok())
                         .collect(),
+                    winner_id: parts.get(5).and_then(|id| id.parse().ok()),
+                    payout: parts
+                        .get(6)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(0),
                 })
             }
             Some("event") if parts.len() == 4 => events.push(MatchEvent {
@@ -164,7 +173,7 @@ fn persist(state: &AppState) {
         })
         .collect::<Vec<_>>();
     raw.push(format!(
-        "tournament|{}|{}|{}|{}",
+        "tournament|{}|{}|{}|{}|{}|{}",
         clean(&tournament.name),
         clean(&tournament.status),
         clean(&tournament.prize),
@@ -173,7 +182,11 @@ fn persist(state: &AppState) {
             .iter()
             .map(usize::to_string)
             .collect::<Vec<_>>()
-            .join(",")
+            .join(","),
+        tournament
+            .winner_id
+            .map_or(String::new(), |id| id.to_string()),
+        tournament.payout
     ));
     raw.extend(events.iter().map(|event| {
         format!(
@@ -229,6 +242,7 @@ fn route(
         ("POST", "/api/train") => train_agent(body, state),
         ("POST", "/api/tournament/join") => join_tournament(body, state),
         ("POST", "/api/tournament/round") => play_round(state),
+        ("POST", "/api/tournament/settle") => settle_tournament(state),
         ("POST", "/api/tournament/reset") => reset_tournament(state),
         _ => (
             "404 Not Found",
@@ -361,6 +375,56 @@ fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
     )
 }
 
+fn settle_tournament(state: &AppState) -> (&'static str, &'static str, String) {
+    let tournament_snapshot = state.tournament.lock().unwrap().clone();
+    if tournament_snapshot.agents.is_empty() {
+        return (
+            "409 Conflict",
+            "application/json",
+            "{\"error\":\"no entrants\"}".into(),
+        );
+    }
+    if tournament_snapshot.winner_id.is_some() {
+        return (
+            "409 Conflict",
+            "application/json",
+            "{\"error\":\"tournament already settled\"}".into(),
+        );
+    }
+    let agents = state.agents.lock().unwrap();
+    let Some(winner) = tournament_snapshot
+        .agents
+        .iter()
+        .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
+        .max_by_key(|agent| (agent.wins, agent.goals, agent.rating))
+    else {
+        return (
+            "409 Conflict",
+            "application/json",
+            "{\"error\":\"no valid entrants\"}".into(),
+        );
+    };
+    let winner_id = winner.id;
+    let winner_name = winner.name.clone();
+    drop(agents);
+    let mut tournament = state.tournament.lock().unwrap();
+    tournament.status = "SETTLED".into();
+    tournament.winner_id = Some(winner_id);
+    tournament.payout = 2_500;
+    let payout = tournament.payout;
+    drop(tournament);
+    persist(state);
+    (
+        "200 OK",
+        "application/json",
+        format!(
+            "{{\"winner\":\"{}\",\"payout\":{}}}",
+            escape(&winner_name),
+            payout
+        ),
+    )
+}
+
 fn reset_tournament(state: &AppState) -> (&'static str, &'static str, String) {
     let mut agents = state.agents.lock().unwrap();
     for agent in agents.iter_mut() {
@@ -378,6 +442,8 @@ fn reset_tournament(state: &AppState) -> (&'static str, &'static str, String) {
     tournament.name = format!("Valkyrie Cup · Week {week:02}");
     tournament.status = "LIVE".into();
     tournament.agents = agents.iter().map(|agent| agent.id).collect();
+    tournament.winner_id = None;
+    tournament.payout = 0;
     drop(tournament);
     drop(agents);
     let mut events = state.events.lock().unwrap();
@@ -417,8 +483,16 @@ fn state_json(state: &AppState) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"tournament\":{{\"name\":\"{}\",\"status\":\"{}\",\"prize\":\"{}\",\"entrants\":{}}},\"agents\":[{}],\"events\":[{}]}}",
-        escape(&tournament.name), tournament.status, escape(&tournament.prize), tournament.agents.len(), agent_json, event_json
+        "{{\"tournament\":{{\"name\":\"{}\",\"status\":\"{}\",\"prize\":\"{}\",\"entrants\":{},\"settled\":{},\"winner\":{},\"payout\":{}}},\"agents\":[{}],\"events\":[{}]}}",
+        escape(&tournament.name),
+        tournament.status,
+        escape(&tournament.prize),
+        tournament.agents.len(),
+        tournament.winner_id.is_some(),
+        tournament.winner_id.map_or("null".into(), |id| id.to_string()),
+        tournament.payout,
+        agent_json,
+        event_json
     )
 }
 
@@ -462,6 +536,8 @@ mod tests {
                 status: "LIVE".into(),
                 prize: "P".into(),
                 agents: vec![],
+                winner_id: None,
+                payout: 0,
             })),
             events: Arc::new(Mutex::new(vec![])),
             storage_path: None,
@@ -498,6 +574,8 @@ mod tests {
                 status: "LIVE".into(),
                 prize: "P".into(),
                 agents: vec![1, 2],
+                winner_id: None,
+                payout: 0,
             })),
             events: Arc::new(Mutex::new(vec![])),
             storage_path: None,
