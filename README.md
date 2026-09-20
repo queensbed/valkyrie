@@ -1,6 +1,6 @@
 # Valkyrie Cup
 
-Valkyrie Cup is a mobile-first football tournament MVP where players create AI football agents, train them with plain-language prompts, and enter them into live competitions.
+Valkyrie Cup is a mobile-first football tournament MVP where players create AI football agents, train them with plain-language prompts, enter them into live competitions, and resolve the next round into updated standings.
 
 ## Why Rust
 

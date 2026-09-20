@@ -107,6 +107,7 @@ fn route(
         ("POST", "/api/agents") => create_agent(body, state),
         ("POST", "/api/train") => train_agent(body, state),
         ("POST", "/api/tournament/join") => join_tournament(body, state),
+        ("POST", "/api/tournament/round") => play_round(state),
         _ => (
             "404 Not Found",
             "application/json",
@@ -182,6 +183,36 @@ fn join_tournament(body: &str, state: &AppState) -> (&'static str, &'static str,
     )
 }
 
+fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
+    let tournament = state.tournament.lock().unwrap().clone();
+    let mut agents = state.agents.lock().unwrap();
+    let Some(winner_id) = tournament
+        .agents
+        .iter()
+        .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
+        .max_by_key(|agent| agent.rating)
+        .map(|agent| agent.id)
+    else {
+        return (
+            "409 Conflict",
+            "application/json",
+            "{\"error\":\"no entrants\"}".into(),
+        );
+    };
+    let winner = agents
+        .iter_mut()
+        .find(|agent| agent.id == winner_id)
+        .unwrap();
+    winner.wins += 1;
+    winner.goals += 2;
+    winner.rating = (winner.rating + 1).min(99);
+    (
+        "200 OK",
+        "application/json",
+        format!("{{\"winner\":\"{}\",\"goals\":2}}", escape(&winner.name)),
+    )
+}
+
 fn state_json(state: &AppState) -> String {
     let agents = state.agents.lock().unwrap();
     let tournament = state.tournament.lock().unwrap();
@@ -239,5 +270,41 @@ mod tests {
         };
         train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
         assert_eq!(state.agents.lock().unwrap()[0].rating, 64);
+    }
+
+    #[test]
+    fn round_rewards_highest_rated_entrant() {
+        let state = AppState {
+            agents: Arc::new(Mutex::new(vec![
+                Agent {
+                    id: 1,
+                    name: "A".into(),
+                    style: "B".into(),
+                    prompt: "C".into(),
+                    rating: 60,
+                    wins: 0,
+                    goals: 0,
+                },
+                Agent {
+                    id: 2,
+                    name: "Winner".into(),
+                    style: "B".into(),
+                    prompt: "C".into(),
+                    rating: 80,
+                    wins: 0,
+                    goals: 0,
+                },
+            ])),
+            tournament: Arc::new(Mutex::new(Tournament {
+                name: "T".into(),
+                status: "LIVE".into(),
+                prize: "P".into(),
+                agents: vec![1, 2],
+            })),
+        };
+        play_round(&state);
+        let agents = state.agents.lock().unwrap();
+        assert_eq!(agents[1].wins, 1);
+        assert_eq!(agents[1].goals, 2);
     }
 }
