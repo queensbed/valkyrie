@@ -14,6 +14,7 @@
     .card { background:rgba(16,29,49,.82); border:1px solid var(--line); border-radius:18px; padding:22px; box-shadow:0 18px 50px #0003; } .score { font-size:44px; font-weight:800; } .metric { display:flex; justify-content:space-between; border-top:1px solid var(--line); padding:15px 0 0; margin-top:15px; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .wide { grid-column:1/-1; } .agent { display:flex; align-items:center; gap:14px; padding:14px 0; border-top:1px solid var(--line); } .agent:first-child { border-top:0; }
     .avatar { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; background:linear-gradient(135deg,#56e39f,#2f7df6); color:#071522; font-weight:800; } .agent-info { flex:1; } .agent-name { font-weight:700; } small { color:var(--muted); } .rating { color:var(--accent); font-weight:700; }
+    .event { border-top:1px solid var(--line); padding:14px 0; } .event:first-child { border-top:0; } .event-title { font-weight:700; } .event-detail { color:var(--muted); margin-top:4px; font-size:13px; } .round { color:var(--accent); font-size:11px; letter-spacing:.1em; text-transform:uppercase; }
     form { display:grid; gap:12px; } input, select, textarea { width:100%; border:1px solid var(--line); background:#091525; color:#fff; border-radius:10px; padding:12px; font:inherit; } textarea { min-height:84px; resize:vertical; } button { border:0; background:var(--accent); color:#071522; border-radius:10px; padding:12px 16px; font-weight:800; cursor:pointer; } button.secondary { background:#1a2c45; color:#dce8f5; }
     .empty { color:var(--muted); padding:20px 0; } .toast { position:fixed; right:18px; bottom:18px; background:#d9fff0; color:#062217; padding:12px 16px; border-radius:10px; display:none; }
     @media(max-width:720px) { main { padding:20px 15px 48px; } header { margin-bottom:28px; } .hero,.grid { grid-template-columns:1fr; } .wide { grid-column:auto; } }
@@ -30,6 +31,7 @@
     <div class="card"><h2>Leaderboard</h2><div id="leaderboard" class="empty">Loading agents…</div><button class="secondary" onclick="round()">Play next round</button></div>
     <div class="card"><h2>Build your agent</h2><form id="agent-form"><input name="name" placeholder="Agent name" required><select name="style"><option>High press</option><option>Possession</option><option>Counter attack</option><option>Adaptive</option></select><textarea name="prompt" placeholder="Tell your agent how to play…" required></textarea><button>Create agent</button></form></div>
     <div class="card wide"><h2>Coach console</h2><form id="train-form"><select name="id" id="agent-select"></select><textarea name="prompt" placeholder="Example: If the opponent overloads the wing, switch play quickly." required></textarea><button>Train selected agent</button></form></div>
+    <div class="card wide"><h2>Live match feed</h2><div id="events" class="empty">Loading events…</div></div>
   </section>
 </main>
 <div id="toast" class="toast"></div>
@@ -44,6 +46,7 @@
     const ranked = [...state.agents].sort((a,b)=>b.rating-a.rating);
     document.querySelector('#leaderboard').innerHTML = ranked.map((a,i)=>`<div class="agent"><div class="avatar">${i+1}</div><div class="agent-info"><div class="agent-name">${a.name}</div><small>${a.style} · ${a.wins} wins · ${a.goals} goals</small></div><div class="rating">${a.rating}</div><button class="secondary" onclick="join(${a.id})">Enter</button></div>`).join('');
     document.querySelector('#agent-select').innerHTML = state.agents.map(a=>`<option value="${a.id}">${a.name} · rating ${a.rating}</option>`).join('');
+    document.querySelector('#events').innerHTML = state.events.map(event=>`<div class="event"><div class="round">Round ${event.round}</div><div class="event-title">${event.title}</div><div class="event-detail">${event.detail}</div></div>`).join('');
   }
   async function post(url, data) { const result = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}); const json=await result.json(); if(!result.ok) throw new Error(json.error); return json; }
   async function join(id) { try { await post('/api/tournament/join',{id:String(id)}); toast('Agent entered the Valkyrie Cup'); refresh(); } catch(e) { toast(e.message); } }

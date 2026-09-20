@@ -22,10 +22,18 @@ struct Tournament {
     agents: Vec<usize>,
 }
 
+#[derive(Clone, Debug)]
+struct MatchEvent {
+    round: usize,
+    title: String,
+    detail: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     agents: Arc<Mutex<Vec<Agent>>>,
     tournament: Arc<Mutex<Tournament>>,
+    events: Arc<Mutex<Vec<MatchEvent>>>,
 }
 
 fn main() {
@@ -56,6 +64,18 @@ fn main() {
             prize: "2,500 credits".into(),
             agents: vec![1, 2],
         })),
+        events: Arc::new(Mutex::new(vec![
+            MatchEvent {
+                round: 3,
+                title: "Pressing Phoenix takes the lead".into(),
+                detail: "A two-goal burst lifts the current leader to 84 rating.".into(),
+            },
+            MatchEvent {
+                round: 2,
+                title: "Calm Current controls midfield".into(),
+                detail: "Possession play earns a second tournament win.".into(),
+            },
+        ])),
     };
 
     let listener = TcpListener::bind("0.0.0.0:8080").expect("bind port 8080");
@@ -206,23 +226,50 @@ fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
     winner.wins += 1;
     winner.goals += 2;
     winner.rating = (winner.rating + 1).min(99);
+    let round = {
+        let events = state.events.lock().unwrap();
+        events.iter().map(|event| event.round).max().unwrap_or(0) + 1
+    };
+    let event = MatchEvent {
+        round,
+        title: format!("{} wins round {}", winner.name, round),
+        detail: format!("Two goals added; rating rises to {}.", winner.rating),
+    };
+    state.events.lock().unwrap().insert(0, event);
     (
         "200 OK",
         "application/json",
-        format!("{{\"winner\":\"{}\",\"goals\":2}}", escape(&winner.name)),
+        format!(
+            "{{\"winner\":\"{}\",\"goals\":2,\"round\":{}}}",
+            escape(&winner.name),
+            round
+        ),
     )
 }
 
 fn state_json(state: &AppState) -> String {
     let agents = state.agents.lock().unwrap();
     let tournament = state.tournament.lock().unwrap();
+    let events = state.events.lock().unwrap();
     let agent_json = agents.iter().map(|agent| format!(
         "{{\"id\":{},\"name\":\"{}\",\"style\":\"{}\",\"prompt\":\"{}\",\"rating\":{},\"wins\":{},\"goals\":{}}}",
         agent.id, escape(&agent.name), escape(&agent.style), escape(&agent.prompt), agent.rating, agent.wins, agent.goals
     )).collect::<Vec<_>>().join(",");
+    let event_json = events
+        .iter()
+        .map(|event| {
+            format!(
+                "{{\"round\":{},\"title\":\"{}\",\"detail\":\"{}\"}}",
+                event.round,
+                escape(&event.title),
+                escape(&event.detail)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"tournament\":{{\"name\":\"{}\",\"status\":\"{}\",\"prize\":\"{}\",\"entrants\":{}}},\"agents\":[{}]}}",
-        escape(&tournament.name), tournament.status, escape(&tournament.prize), tournament.agents.len(), agent_json
+        "{{\"tournament\":{{\"name\":\"{}\",\"status\":\"{}\",\"prize\":\"{}\",\"entrants\":{}}},\"agents\":[{}],\"events\":[{}]}}",
+        escape(&tournament.name), tournament.status, escape(&tournament.prize), tournament.agents.len(), agent_json, event_json
     )
 }
 
@@ -267,6 +314,7 @@ mod tests {
                 prize: "P".into(),
                 agents: vec![],
             })),
+            events: Arc::new(Mutex::new(vec![])),
         };
         train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
         assert_eq!(state.agents.lock().unwrap()[0].rating, 64);
@@ -301,10 +349,12 @@ mod tests {
                 prize: "P".into(),
                 agents: vec![1, 2],
             })),
+            events: Arc::new(Mutex::new(vec![])),
         };
         play_round(&state);
         let agents = state.agents.lock().unwrap();
         assert_eq!(agents[1].wins, 1);
         assert_eq!(agents[1].goals, 2);
+        assert_eq!(state.events.lock().unwrap()[0].round, 1);
     }
 }
