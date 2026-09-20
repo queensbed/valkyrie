@@ -12,6 +12,7 @@ struct Agent {
     rating: u32,
     wins: u32,
     goals: u32,
+    training_sessions: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,7 @@ fn main() {
                 rating: 84,
                 wins: 3,
                 goals: 9,
+                training_sessions: 6,
             },
             Agent {
                 id: 2,
@@ -58,6 +60,7 @@ fn main() {
                 rating: 79,
                 wins: 2,
                 goals: 7,
+                training_sessions: 4,
             },
         ])),
         tournament: Arc::new(Mutex::new(Tournament {
@@ -155,6 +158,7 @@ fn create_agent(body: &str, state: &AppState) -> (&'static str, &'static str, St
         rating: 60,
         wins: 0,
         goals: 0,
+        training_sessions: 0,
     });
     (
         "201 Created",
@@ -178,10 +182,15 @@ fn train_agent(body: &str, state: &AppState) -> (&'static str, &'static str, Str
     };
     agent.prompt = prompt;
     agent.rating = (agent.rating + 4).min(99);
+    agent.training_sessions += 1;
+    let training_sessions = agent.training_sessions;
     (
         "200 OK",
         "application/json",
-        format!("{{\"rating\":{}}}", agent.rating),
+        format!(
+            "{{\"rating\":{},\"training_sessions\":{}}}",
+            agent.rating, training_sessions
+        ),
     )
 }
 
@@ -304,8 +313,15 @@ fn state_json(state: &AppState) -> String {
     let tournament = state.tournament.lock().unwrap();
     let events = state.events.lock().unwrap();
     let agent_json = agents.iter().map(|agent| format!(
-        "{{\"id\":{},\"name\":\"{}\",\"style\":\"{}\",\"prompt\":\"{}\",\"rating\":{},\"wins\":{},\"goals\":{}}}",
-        agent.id, escape(&agent.name), escape(&agent.style), escape(&agent.prompt), agent.rating, agent.wins, agent.goals
+        "{{\"id\":{},\"name\":\"{}\",\"style\":\"{}\",\"prompt\":\"{}\",\"rating\":{},\"wins\":{},\"goals\":{},\"training_sessions\":{}}}",
+        agent.id,
+        escape(&agent.name),
+        escape(&agent.style),
+        escape(&agent.prompt),
+        agent.rating,
+        agent.wins,
+        agent.goals,
+        agent.training_sessions
     )).collect::<Vec<_>>().join(",");
     let event_json = events
         .iter()
@@ -369,6 +385,7 @@ mod tests {
                 rating: 60,
                 wins: 0,
                 goals: 0,
+                training_sessions: 0,
             }])),
             tournament: Arc::new(Mutex::new(Tournament {
                 name: "T".into(),
@@ -380,8 +397,9 @@ mod tests {
             })),
             events: Arc::new(Mutex::new(vec![])),
         };
-        train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
+        let result = train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
         assert_eq!(state.agents.lock().unwrap()[0].rating, 64);
+        assert!(result.2.contains("\"training_sessions\":1"));
     }
 
     #[test]
@@ -396,6 +414,7 @@ mod tests {
                     rating: 60,
                     wins: 0,
                     goals: 0,
+                    training_sessions: 0,
                 },
                 Agent {
                     id: 2,
@@ -405,6 +424,7 @@ mod tests {
                     rating: 80,
                     wins: 0,
                     goals: 0,
+                    training_sessions: 0,
                 },
             ])),
             tournament: Arc::new(Mutex::new(Tournament {
@@ -436,6 +456,7 @@ mod tests {
                     rating: 80,
                     wins: 3,
                     goals: 8,
+                    training_sessions: 0,
                 },
                 Agent {
                     id: 2,
@@ -445,6 +466,7 @@ mod tests {
                     rating: 90,
                     wins: 2,
                     goals: 20,
+                    training_sessions: 0,
                 },
             ])),
             tournament: Arc::new(Mutex::new(Tournament {
