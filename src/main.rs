@@ -211,42 +211,58 @@ fn join_tournament(body: &str, state: &AppState) -> (&'static str, &'static str,
 fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
     let tournament = state.tournament.lock().unwrap().clone();
     let mut agents = state.agents.lock().unwrap();
-    let Some(winner_id) = tournament
+    let mut entrants = tournament
         .agents
         .iter()
         .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
-        .max_by_key(|agent| agent.rating)
-        .map(|agent| agent.id)
-    else {
+        .collect::<Vec<_>>();
+    entrants.sort_by_key(|agent| std::cmp::Reverse(agent.rating));
+    let Some((winner_snapshot, opponent_snapshot)) = entrants.first().zip(entrants.get(1)) else {
         return (
             "409 Conflict",
             "application/json",
-            "{\"error\":\"no entrants\"}".into(),
+            "{\"error\":\"at least two entrants are required\"}".into(),
         );
     };
-    let winner = agents
-        .iter_mut()
-        .find(|agent| agent.id == winner_id)
+    let winner_id = winner_snapshot.id;
+    let opponent_id = opponent_snapshot.id;
+    let winner_name = winner_snapshot.name.clone();
+    let opponent_name = opponent_snapshot.name.clone();
+    let winner_index = agents
+        .iter()
+        .position(|agent| agent.id == winner_id)
         .unwrap();
+    let opponent_index = agents
+        .iter()
+        .position(|agent| agent.id == opponent_id)
+        .unwrap();
+    let winner = &mut agents[winner_index];
     winner.wins += 1;
     winner.goals += 2;
     winner.rating = (winner.rating + 1).min(99);
+    let winner_rating = winner.rating;
+    let opponent = &mut agents[opponent_index];
+    opponent.goals += 1;
     let round = {
         let events = state.events.lock().unwrap();
         events.iter().map(|event| event.round).max().unwrap_or(0) + 1
     };
     let event = MatchEvent {
         round,
-        title: format!("{} wins round {}", winner.name, round),
-        detail: format!("Two goals added; rating rises to {}.", winner.rating),
+        title: format!("{winner_name} defeats {opponent_name}"),
+        detail: format!(
+            "Round {round} · {winner_name} 2–1 {opponent_name} · rating rises to {winner_rating}."
+        ),
     };
+    drop(agents);
     state.events.lock().unwrap().insert(0, event);
     (
         "200 OK",
         "application/json",
         format!(
-            "{{\"winner\":\"{}\",\"goals\":2,\"round\":{}}}",
-            escape(&winner.name),
+            "{{\"winner\":\"{}\",\"opponent\":\"{}\",\"winner_goals\":2,\"opponent_goals\":1,\"round\":{}}}",
+            escape(&winner_name),
+            escape(&opponent_name),
             round
         ),
     )
@@ -417,10 +433,13 @@ mod tests {
             })),
             events: Arc::new(Mutex::new(vec![])),
         };
-        play_round(&state);
+        let result = play_round(&state);
         let agents = state.agents.lock().unwrap();
         assert_eq!(agents[1].wins, 1);
         assert_eq!(agents[1].goals, 2);
+        assert_eq!(agents[0].goals, 1);
+        assert!(result.2.contains("\"winner_goals\":2"));
+        assert!(result.2.contains("\"opponent_goals\":1"));
         assert_eq!(state.events.lock().unwrap()[0].round, 1);
     }
 
