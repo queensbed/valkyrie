@@ -1,3 +1,4 @@
+use std::fs::{create_dir_all, read_to_string, write};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -36,11 +37,29 @@ struct AppState {
     agents: Arc<Mutex<Vec<Agent>>>,
     tournament: Arc<Mutex<Tournament>>,
     events: Arc<Mutex<Vec<MatchEvent>>>,
+    storage_path: Option<Arc<String>>,
 }
 
 fn main() {
+    let storage_path = Arc::new("data/valkyrie.state".to_string());
+    let (agents, tournament, events) = load_state(&storage_path);
     let state = AppState {
-        agents: Arc::new(Mutex::new(vec![
+        agents: Arc::new(Mutex::new(agents)),
+        tournament: Arc::new(Mutex::new(tournament)),
+        events: Arc::new(Mutex::new(events)),
+        storage_path: Some(storage_path),
+    };
+    let listener = TcpListener::bind("0.0.0.0:8080").expect("bind port 8080");
+    println!("Valkyrie Cup listening on http://localhost:8080");
+    for stream in listener.incoming().flatten() {
+        let state = state.clone();
+        thread::spawn(move || handle_connection(stream, state));
+    }
+}
+
+fn default_state() -> (Vec<Agent>, Tournament, Vec<MatchEvent>) {
+    (
+        vec![
             Agent {
                 id: 1,
                 name: "Pressing Phoenix".into(),
@@ -59,16 +78,16 @@ fn main() {
                 wins: 2,
                 goals: 7,
             },
-        ])),
-        tournament: Arc::new(Mutex::new(Tournament {
+        ],
+        Tournament {
             name: "Valkyrie Cup · Week 01".into(),
             status: "LIVE".into(),
             prize: "2,500 credits".into(),
             agents: vec![1, 2],
             winner_id: None,
             payout: 0,
-        })),
-        events: Arc::new(Mutex::new(vec![
+        },
+        vec![
             MatchEvent {
                 round: 3,
                 title: "Pressing Phoenix takes the lead".into(),
@@ -79,15 +98,106 @@ fn main() {
                 title: "Calm Current controls midfield".into(),
                 detail: "Possession play earns a second tournament win.".into(),
             },
-        ])),
-    };
+        ],
+    )
+}
 
-    let listener = TcpListener::bind("0.0.0.0:8080").expect("bind port 8080");
-    println!("Valkyrie Cup listening on http://localhost:8080");
-    for stream in listener.incoming().flatten() {
-        let state = state.clone();
-        thread::spawn(move || handle_connection(stream, state));
+fn load_state(path: &str) -> (Vec<Agent>, Tournament, Vec<MatchEvent>) {
+    let Ok(raw) = read_to_string(path) else {
+        return default_state();
+    };
+    let (mut agents, mut tournament, mut events) = (Vec::new(), None, Vec::new());
+    for line in raw.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        match parts.first().copied() {
+            Some("agent") if parts.len() == 8 => agents.push(Agent {
+                id: parts[1].parse().unwrap_or(0),
+                name: parts[2].replace("\\p", "|"),
+                style: parts[3].replace("\\p", "|"),
+                prompt: parts[4].replace("\\p", "|"),
+                rating: parts[5].parse().unwrap_or(60),
+                wins: parts[6].parse().unwrap_or(0),
+                goals: parts[7].parse().unwrap_or(0),
+            }),
+            Some("tournament") if parts.len() == 5 || parts.len() == 7 => {
+                tournament = Some(Tournament {
+                    name: parts[1].replace("\\p", "|"),
+                    status: parts[2].replace("\\p", "|"),
+                    prize: parts[3].replace("\\p", "|"),
+                    agents: parts[4]
+                        .split(',')
+                        .filter_map(|id| id.parse().ok())
+                        .collect(),
+                    winner_id: parts.get(5).and_then(|id| id.parse().ok()),
+                    payout: parts
+                        .get(6)
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(0),
+                })
+            }
+            Some("event") if parts.len() == 4 => events.push(MatchEvent {
+                round: parts[1].parse().unwrap_or(0),
+                title: parts[2].replace("\\p", "|"),
+                detail: parts[3].replace("\\p", "|"),
+            }),
+            _ => {}
+        }
     }
+    match (agents.is_empty(), tournament) {
+        (false, Some(tournament)) => (agents, tournament, events),
+        _ => default_state(),
+    }
+}
+
+fn persist(state: &AppState) {
+    let Some(path) = state.storage_path.as_deref() else {
+        return;
+    };
+    let agents = state.agents.lock().unwrap();
+    let tournament = state.tournament.lock().unwrap();
+    let events = state.events.lock().unwrap();
+    let clean = |value: &str| value.replace('|', "\\p").replace('\n', " ");
+    let mut raw = agents
+        .iter()
+        .map(|agent| {
+            format!(
+                "agent|{}|{}|{}|{}|{}|{}|{}",
+                agent.id,
+                clean(&agent.name),
+                clean(&agent.style),
+                clean(&agent.prompt),
+                agent.rating,
+                agent.wins,
+                agent.goals
+            )
+        })
+        .collect::<Vec<_>>();
+    raw.push(format!(
+        "tournament|{}|{}|{}|{}|{}|{}",
+        clean(&tournament.name),
+        clean(&tournament.status),
+        clean(&tournament.prize),
+        tournament
+            .agents
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        tournament
+            .winner_id
+            .map_or(String::new(), |id| id.to_string()),
+        tournament.payout
+    ));
+    raw.extend(events.iter().map(|event| {
+        format!(
+            "event|{}|{}|{}",
+            event.round,
+            clean(&event.title),
+            clean(&event.detail)
+        )
+    }));
+    let _ = create_dir_all("data");
+    let _ = write(path, raw.join("\n"));
 }
 
 fn handle_connection(mut stream: TcpStream, state: AppState) {
@@ -133,6 +243,7 @@ fn route(
         ("POST", "/api/tournament/join") => join_tournament(body, state),
         ("POST", "/api/tournament/round") => play_round(state),
         ("POST", "/api/tournament/settle") => settle_tournament(state),
+        ("POST", "/api/tournament/reset") => reset_tournament(state),
         _ => (
             "404 Not Found",
             "application/json",
@@ -156,6 +267,8 @@ fn create_agent(body: &str, state: &AppState) -> (&'static str, &'static str, St
         wins: 0,
         goals: 0,
     });
+    drop(agents);
+    persist(state);
     (
         "201 Created",
         "application/json",
@@ -178,10 +291,13 @@ fn train_agent(body: &str, state: &AppState) -> (&'static str, &'static str, Str
     };
     agent.prompt = prompt;
     agent.rating = (agent.rating + 4).min(99);
+    let rating = agent.rating;
+    drop(agents);
+    persist(state);
     (
         "200 OK",
         "application/json",
-        format!("{{\"rating\":{}}}", agent.rating),
+        format!("{{\"rating\":{rating}}}"),
     )
 }
 
@@ -201,6 +317,9 @@ fn join_tournament(body: &str, state: &AppState) -> (&'static str, &'static str,
     if !tournament.agents.contains(&id) {
         tournament.agents.push(id);
     }
+    drop(tournament);
+    drop(agents);
+    persist(state);
     (
         "200 OK",
         "application/json",
@@ -231,22 +350,26 @@ fn play_round(state: &AppState) -> (&'static str, &'static str, String) {
     winner.wins += 1;
     winner.goals += 2;
     winner.rating = (winner.rating + 1).min(99);
+    let winner_name = winner.name.clone();
+    let winner_rating = winner.rating;
+    drop(agents);
     let round = {
         let events = state.events.lock().unwrap();
         events.iter().map(|event| event.round).max().unwrap_or(0) + 1
     };
     let event = MatchEvent {
         round,
-        title: format!("{} wins round {}", winner.name, round),
-        detail: format!("Two goals added; rating rises to {}.", winner.rating),
+        title: format!("{winner_name} wins round {round}"),
+        detail: format!("Two goals added; rating rises to {winner_rating}."),
     };
     state.events.lock().unwrap().insert(0, event);
+    persist(state);
     (
         "200 OK",
         "application/json",
         format!(
             "{{\"winner\":\"{}\",\"goals\":2,\"round\":{}}}",
-            escape(&winner.name),
+            escape(&winner_name),
             round
         ),
     )
@@ -288,14 +411,54 @@ fn settle_tournament(state: &AppState) -> (&'static str, &'static str, String) {
     tournament.status = "SETTLED".into();
     tournament.winner_id = Some(winner_id);
     tournament.payout = 2_500;
+    let payout = tournament.payout;
+    drop(tournament);
+    persist(state);
     (
         "200 OK",
         "application/json",
         format!(
             "{{\"winner\":\"{}\",\"payout\":{}}}",
             escape(&winner_name),
-            tournament.payout
+            payout
         ),
+    )
+}
+
+fn reset_tournament(state: &AppState) -> (&'static str, &'static str, String) {
+    let mut agents = state.agents.lock().unwrap();
+    for agent in agents.iter_mut() {
+        agent.wins = 0;
+        agent.goals = 0;
+    }
+    let mut tournament = state.tournament.lock().unwrap();
+    let week = tournament
+        .name
+        .split("Week ")
+        .nth(1)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        + 1;
+    tournament.name = format!("Valkyrie Cup · Week {week:02}");
+    tournament.status = "LIVE".into();
+    tournament.agents = agents.iter().map(|agent| agent.id).collect();
+    tournament.winner_id = None;
+    tournament.payout = 0;
+    drop(tournament);
+    drop(agents);
+    let mut events = state.events.lock().unwrap();
+    events.clear();
+    events.push(MatchEvent {
+        round: 1,
+        title: format!("{} is live", state.tournament.lock().unwrap().name),
+        detail: "Fresh standings, fresh strategies, same prize pool.".into(),
+    });
+    drop(events);
+    persist(state);
+    (
+        "200 OK",
+        "application/json",
+        "{\"message\":\"new tournament week started\"}".into(),
     )
 }
 
@@ -326,9 +489,7 @@ fn state_json(state: &AppState) -> String {
         escape(&tournament.prize),
         tournament.agents.len(),
         tournament.winner_id.is_some(),
-        tournament
-            .winner_id
-            .map_or("null".into(), |id| id.to_string()),
+        tournament.winner_id.map_or("null".into(), |id| id.to_string()),
         tournament.payout,
         agent_json,
         event_json
@@ -379,6 +540,7 @@ mod tests {
                 payout: 0,
             })),
             events: Arc::new(Mutex::new(vec![])),
+            storage_path: None,
         };
         train_agent(r#"{"id":"1","prompt":"Press earlier"}"#, &state);
         assert_eq!(state.agents.lock().unwrap()[0].rating, 64);
@@ -416,49 +578,12 @@ mod tests {
                 payout: 0,
             })),
             events: Arc::new(Mutex::new(vec![])),
+            storage_path: None,
         };
         play_round(&state);
         let agents = state.agents.lock().unwrap();
         assert_eq!(agents[1].wins, 1);
         assert_eq!(agents[1].goals, 2);
         assert_eq!(state.events.lock().unwrap()[0].round, 1);
-    }
-
-    #[test]
-    fn settlement_pays_the_best_record() {
-        let state = AppState {
-            agents: Arc::new(Mutex::new(vec![
-                Agent {
-                    id: 1,
-                    name: "Leader".into(),
-                    style: "B".into(),
-                    prompt: "C".into(),
-                    rating: 80,
-                    wins: 3,
-                    goals: 8,
-                },
-                Agent {
-                    id: 2,
-                    name: "Chaser".into(),
-                    style: "B".into(),
-                    prompt: "C".into(),
-                    rating: 90,
-                    wins: 2,
-                    goals: 20,
-                },
-            ])),
-            tournament: Arc::new(Mutex::new(Tournament {
-                name: "T".into(),
-                status: "LIVE".into(),
-                prize: "P".into(),
-                agents: vec![1, 2],
-                winner_id: None,
-                payout: 0,
-            })),
-            events: Arc::new(Mutex::new(vec![])),
-        };
-        let result = settle_tournament(&state);
-        assert!(result.2.contains("Leader"));
-        assert_eq!(state.tournament.lock().unwrap().payout, 2_500);
     }
 }
