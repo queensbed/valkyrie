@@ -60,11 +60,9 @@ fn main() {
 
     let listener = TcpListener::bind("0.0.0.0:8080").expect("bind port 8080");
     println!("Valkyrie Cup listening on http://localhost:8080");
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let state = state.clone();
-            thread::spawn(move || handle_connection(stream, state));
-        }
+    for stream in listener.incoming().flatten() {
+        let state = state.clone();
+        thread::spawn(move || handle_connection(stream, state));
     }
 }
 
